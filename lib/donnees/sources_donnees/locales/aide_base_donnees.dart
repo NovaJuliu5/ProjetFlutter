@@ -1,0 +1,1 @@
+// Utilisé pour SQLite éventuel, non implémenté ici
