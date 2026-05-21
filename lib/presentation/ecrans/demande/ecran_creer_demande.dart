@@ -4,6 +4,8 @@ import 'package:go_router/go_router.dart';
 import 'package:help_neighbor/coeur/extensions/extensions_context.dart';
 import 'package:help_neighbor/domaine/cas_utilisation/demande/creer_demande_usecase.dart';
 import 'package:help_neighbor/app/dependances.dart';
+import 'package:help_neighbor/presentation/widgets/communs/barre_navigation_bas_personnalisee.dart';
+import 'package:help_neighbor/presentation/ecrans/accueil/fournisseur_accueil.dart';
 
 class EcranCreerDemande extends ConsumerStatefulWidget {
   const EcranCreerDemande({super.key});
@@ -15,19 +17,27 @@ class EcranCreerDemande extends ConsumerStatefulWidget {
 class _EcranCreerDemandeState extends ConsumerState<EcranCreerDemande> {
   final _titreController = TextEditingController();
   final _descriptionController = TextEditingController();
-  String _categorie = 'Bricolage';
+  String _categorieNom = 'Bricolage';
   String _urgence = 'Pas pressé';
   String _remuneration = 'Gratuit / Échange';
   bool _isLoading = false;
 
-  final List<String> _categories = ['Bricolage', 'Jardinage', 'Transport', 'Informatique', 'Cours', 'Garde / Soin'];
+  final List<String> _categories = [
+    'Bricolage',
+    'Jardinage',
+    'Transport',
+    'Informatique',
+    'Cours',
+    'Garde / Soin',
+  ];
+
   final List<String> _urgences = ['Pas pressé', 'Cette semaine', 'Urgent !'];
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(title: const Text('Publier une demande')),
-      body: Padding(
+      body: SingleChildScrollView(
         padding: const EdgeInsets.all(16.0),
         child: Column(
           children: [
@@ -43,9 +53,9 @@ class _EcranCreerDemandeState extends ConsumerState<EcranCreerDemande> {
             ),
             const SizedBox(height: 12),
             DropdownButtonFormField<String>(
-              value: _categorie,
-              items: _categories.map((c) => DropdownMenuItem(value: c, child: Text(c))).toList(),
-              onChanged: (val) => setState(() => _categorie = val!),
+              value: _categorieNom,
+              items: _categories.map((nom) => DropdownMenuItem(value: nom, child: Text(nom))).toList(),
+              onChanged: (val) => setState(() => _categorieNom = val!),
               decoration: const InputDecoration(labelText: 'CATÉGORIE'),
             ),
             const SizedBox(height: 12),
@@ -85,17 +95,21 @@ class _EcranCreerDemandeState extends ConsumerState<EcranCreerDemande> {
     final data = {
       'titre': _titreController.text,
       'description': _descriptionController.text,
-      'categorie_id': 'id_categorie_à_correspondre', // À améliorer avec vrai mapping
+      'categorie_nom': _categorieNom,
     };
     final useCase = CreerDemandeUseCase(getIt());
     final result = await useCase.executer(data);
     result.fold(
-          (echec) => context.showSnackBar(echec.message, isError: true),
+          (echec) {
+        setState(() => _isLoading = false);
+        context.showSnackBar(echec.message, isError: true);
+      },
           (_) {
+        setState(() => _isLoading = false);
         context.showSnackBar('Demande publiée avec succès !');
+        ref.invalidate(demandesProchesProvider);
         context.pop();
       },
     );
-    setState(() => _isLoading = false);
   }
 }

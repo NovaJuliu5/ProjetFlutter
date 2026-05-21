@@ -1,14 +1,14 @@
 import 'package:dartz/dartz.dart';
 import 'package:help_neighbor/coeur/erreurs/gestionnaire_erreurs.dart';
-import 'package:help_neighbor/coeur/utils/resultat.dart';
 import 'package:help_neighbor/donnees/sources_donnees/distantes/client_api.dart';
 import 'package:help_neighbor/domaine/entites/message_entite.dart';
+import 'package:help_neighbor/coeur/erreurs/echec.dart';
 
 class DepotDiscussion {
   final ClientApi _api;
   DepotDiscussion(this._api);
 
-  Future<Resultat<List<MessageEntite>>> obtenirMessages(String conversationId) async {
+  Future<Either<Echec, List<MessageEntite>>> obtenirMessages(String conversationId) async {
     try {
       final response = await _api.get('/conversations/$conversationId/messages');
       final List list = response.data;
@@ -18,7 +18,7 @@ class DepotDiscussion {
     }
   }
 
-  Future<Resultat<MessageEntite>> envoyerMessage(String conversationId, String contenu) async {
+  Future<Either<Echec, MessageEntite>> envoyerMessage(String conversationId, String contenu) async {
     try {
       final response = await _api.post('/conversations/$conversationId/messages', data: {'contenu': contenu});
       return Right(MessageEntite.fromJson(response.data));

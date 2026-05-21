@@ -20,6 +20,7 @@ class EcranDetailService extends ConsumerWidget {
       utilisateurNom: 'Jean Dupont',
       distanceKm: 2.3,
       noteMoyenne: 4.8,
+      nbAvis: 0,  // <-- AJOUTÉ
     );
     return Scaffold(
       appBar: AppBar(title: Text(service.titre)),

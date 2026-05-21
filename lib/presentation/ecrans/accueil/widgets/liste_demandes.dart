@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:help_neighbor/domaine/entites/entite_demande.dart';
+import 'package:help_neighbor/presentation/widgets/cartes/carte_demande.dart';
 
 class ListeDemandes extends StatelessWidget {
   final List<EntiteDemande> demandes;
@@ -14,11 +15,7 @@ class ListeDemandes extends StatelessWidget {
           padding: EdgeInsets.all(16.0),
           child: Text('Demandes récentes', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
         ),
-        ...demandes.map((d) => ListTile(
-          title: Text(d.titre),
-          subtitle: Text('Statut: ${d.statut} - ${d.utilisateurNom}'),
-          onTap: () => Navigator.pushNamed(context, '/demande/${d.id}'),
-        )),
+        ...demandes.map((d) => CarteDemande(demande: d)).toList(),
       ],
     );
   }

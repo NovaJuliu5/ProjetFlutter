@@ -6,6 +6,9 @@ class EntiteUtilisateur {
   final String? prenom;
   final String? photoUrl;
   final double noteMoyenne;
+  final String? bio;
+  final int? nbServices;
+  final int? nbDemandes;
 
   EntiteUtilisateur({
     required this.id,
@@ -15,17 +18,23 @@ class EntiteUtilisateur {
     this.prenom,
     this.photoUrl,
     required this.noteMoyenne,
+    this.bio,
+    this.nbServices,
+    this.nbDemandes,
   });
 
   factory EntiteUtilisateur.fromJson(Map<String, dynamic> json) {
     return EntiteUtilisateur(
-      id: json['id'],
-      email: json['email'],
+      id: json['id'] ?? '',
+      email: json['email'] ?? '',
       telephone: json['telephone'],
       nom: json['nom'],
       prenom: json['prenom'],
       photoUrl: json['photo_url'],
       noteMoyenne: (json['note_moyenne'] ?? 0).toDouble(),
+      bio: json['bio'],
+      nbServices: json['nb_services'],
+      nbDemandes: json['nb_demandes'],
     );
   }
 }

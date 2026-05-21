@@ -32,7 +32,7 @@ app.post('/api/auth/connexion', async (req, res) => {
     const valid = await bcrypt.compare(password, user.mot_de_passe_hash);
     if (!valid) return res.status(401).json({ message: 'Email ou mot de passe incorrect' });
     const token = jwt.sign({ id: user.id }, JWT_SECRET, { expiresIn: '7d' });
-    res.json({ token, utilisateur: { id: user.id, email: user.email, nom: user.nom, prenom: user.prenom, note_moyenne: 0 } });
+    res.json({ token, utilisateur: { id: user.id, email: user.email, nom: user.nom ?? '', prenom: user.prenom ?? '', note_moyenne: 0 } });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
@@ -67,19 +67,38 @@ app.post('/api/auth/inscription', async (req, res) => {
 // ---------- Profil ----------
 app.get('/api/utilisateurs/:id', authenticateToken, async (req, res) => {
   const { id } = req.params;
-  const result = await pool.query(
-    'SELECT u.id, u.email, p.nom, p.prenom, p.photo_url FROM utilisateurs u LEFT JOIN profils p ON u.id = p.utilisateur_id WHERE u.id = $1',
-    [id]
-  );
-  res.json(result.rows[0]);
+  const result = await pool.query(`
+    SELECT u.id, u.email, u.telephone,
+           p.nom, p.prenom, p.photo_url, p.bio,
+           (SELECT COUNT(*) FROM services WHERE utilisateur_id = u.id AND deleted_at IS NULL) as nb_services,
+           (SELECT COUNT(*) FROM demandes WHERE utilisateur_id = u.id) as nb_demandes,
+           COALESCE((SELECT AVG(an.note_globale) FROM avis a JOIN avis_notes an ON a.id = an.avis_id WHERE a.cible_id = u.id), 0) as note_moyenne
+    FROM utilisateurs u
+    LEFT JOIN profils p ON u.id = p.utilisateur_id
+    WHERE u.id = $1
+  `, [id]);
+  const row = result.rows[0];
+  if (!row) return res.status(404).json({ message: 'Utilisateur non trouvé' });
+  res.json({
+    id: row.id,
+    email: row.email,
+    telephone: row.telephone,
+    nom: row.nom ?? '',
+    prenom: row.prenom ?? '',
+    photo_url: row.photo_url ?? '',
+    bio: row.bio ?? '',
+    nb_services: parseInt(row.nb_services) || 0,
+    nb_demandes: parseInt(row.nb_demandes) || 0,
+    note_moyenne: parseFloat(row.note_moyenne) || 0
+  });
 });
 
 app.put('/api/utilisateurs/profil', authenticateToken, async (req, res) => {
   const userId = req.user.id;
-  const { nom, prenom, photo_url } = req.body;
+  const { nom, prenom, photo_url, bio } = req.body;
   await pool.query(
-    'UPDATE profils SET nom = COALESCE($1, nom), prenom = COALESCE($2, prenom), photo_url = COALESCE($3, photo_url) WHERE utilisateur_id = $4',
-    [nom, prenom, photo_url, userId]
+    'UPDATE profils SET nom = COALESCE($1, nom), prenom = COALESCE($2, prenom), photo_url = COALESCE($3, photo_url), bio = COALESCE($4, bio) WHERE utilisateur_id = $5',
+    [nom, prenom, photo_url, bio, userId]
   );
   res.json({ message: 'Profil mis à jour' });
 });
@@ -88,17 +107,27 @@ app.put('/api/utilisateurs/profil', authenticateToken, async (req, res) => {
 app.get('/api/services/proches', authenticateToken, async (req, res) => {
   const { lat, lon, rayon } = req.query;
   const result = await pool.query(`
-    SELECT s.id, s.titre, s.description, sp.prix_fixe as prix,
-           c.nom as categorie_nom, s.utilisateur_id, p.nom, p.prenom,
-           0 as distance_km, COALESCE(AVG(an.note_globale), 0) as note_moyenne
+    SELECT
+      s.id,
+      s.titre,
+      s.description,
+      COALESCE(sp.prix_fixe, 0) as prix,
+      COALESCE(c.nom, 'Sans catégorie') as categorie_nom,
+      s.utilisateur_id,
+      COALESCE(p.nom, '') as nom,
+      COALESCE(p.prenom, '') as prenom,
+      0 as distance_km,
+      COALESCE(AVG(an.note_globale), 0) as note_moyenne,
+      COUNT(DISTINCT a.id) as nb_avis,
+      p.photo_url
     FROM services s
-    JOIN categories c ON s.categorie_id = c.id
-    JOIN profils p ON s.utilisateur_id = p.utilisateur_id
+    LEFT JOIN categories c ON s.categorie_id = c.id
+    LEFT JOIN profils p ON s.utilisateur_id = p.utilisateur_id
     LEFT JOIN services_prix sp ON s.id = sp.service_id
     LEFT JOIN avis a ON s.id = a.service_id
     LEFT JOIN avis_notes an ON a.id = an.avis_id
     WHERE s.disponible = true
-    GROUP BY s.id, c.nom, p.nom, p.prenom, sp.prix_fixe
+    GROUP BY s.id, c.nom, p.nom, p.prenom, sp.prix_fixe, p.photo_url
     LIMIT 20
   `);
   res.json(result.rows);
@@ -119,26 +148,33 @@ app.post('/api/services', authenticateToken, async (req, res) => {
 
 app.get('/api/services/recherche', authenticateToken, async (req, res) => {
   const { q } = req.query;
-  const result = await pool.query(
-    `SELECT s.id, s.titre, s.description, sp.prix_fixe as prix,
-            c.nom as categorie_nom, s.utilisateur_id, p.nom, p.prenom
+  const result = await pool.query(`
+    SELECT s.id, s.titre, s.description, COALESCE(sp.prix_fixe, 0) as prix,
+            COALESCE(c.nom, 'Sans catégorie') as categorie_nom,
+            s.utilisateur_id,
+            COALESCE(p.nom, '') as nom,
+            COALESCE(p.prenom, '') as prenom,
+            p.photo_url
      FROM services s
-     JOIN categories c ON s.categorie_id = c.id
-     JOIN services_prix sp ON s.id = sp.service_id
-     JOIN profils p ON s.utilisateur_id = p.utilisateur_id
-     WHERE s.titre ILIKE $1 OR s.description ILIKE $1`,
-    [`%${q}%`]
-  );
+     LEFT JOIN categories c ON s.categorie_id = c.id
+     LEFT JOIN services_prix sp ON s.id = sp.service_id
+     LEFT JOIN profils p ON s.utilisateur_id = p.utilisateur_id
+     WHERE (s.titre ILIKE $1 OR s.description ILIKE $1) AND s.disponible = true
+  `, [`%${q}%`]);
   res.json(result.rows);
 });
 
 // ---------- Demandes ----------
 app.get('/api/demandes/proches', authenticateToken, async (req, res) => {
   const result = await pool.query(`
-    SELECT d.id, d.titre, d.description, ds.statut, d.created_at, p.nom, p.prenom
+    SELECT d.id, d.titre, d.description, ds.statut, d.created_at,
+           d.utilisateur_id,
+           COALESCE(p.nom, '') as nom,
+           COALESCE(p.prenom, '') as prenom,
+           p.photo_url
     FROM demandes d
-    JOIN demandes_statuts ds ON d.id = ds.demande_id
-    JOIN profils p ON d.utilisateur_id = p.utilisateur_id
+    LEFT JOIN demandes_statuts ds ON d.id = ds.demande_id
+    LEFT JOIN profils p ON d.utilisateur_id = p.utilisateur_id
     WHERE ds.statut = 'ouverte'
     ORDER BY d.created_at DESC
     LIMIT 20
@@ -147,38 +183,452 @@ app.get('/api/demandes/proches', authenticateToken, async (req, res) => {
 });
 
 app.post('/api/demandes', authenticateToken, async (req, res) => {
-  const { titre, description, categorie_id } = req.body;
+  const { titre, description, categorie_nom } = req.body;
   const userId = req.user.id;
+
+  const catResult = await pool.query('SELECT id FROM categories WHERE nom = $1', [categorie_nom]);
+  if (catResult.rows.length === 0) {
+    return res.status(400).json({ message: 'Catégorie invalide' });
+  }
+  const categorieId = catResult.rows[0].id;
+
   const result = await pool.query(
     'INSERT INTO demandes (utilisateur_id, categorie_id, titre, description) VALUES ($1, $2, $3, $4) RETURNING id',
-    [userId, categorie_id, titre, description]
+    [userId, categorieId, titre, description]
   );
-  await pool.query('INSERT INTO demandes_statuts (demande_id, statut) VALUES ($1, $2)', [result.rows[0].id, 'ouverte']);
-  res.json({ id: result.rows[0].id });
+  const newId = result.rows[0].id;
+
+  await pool.query('INSERT INTO demandes_statuts (demande_id, statut) VALUES ($1, $2)', [newId, 'ouverte']);
+
+  const newDemande = await pool.query(`
+    SELECT d.id, d.titre, d.description, ds.statut, d.created_at,
+           COALESCE(p.nom, '') as nom, COALESCE(p.prenom, '') as prenom,
+           p.photo_url
+    FROM demandes d
+    LEFT JOIN demandes_statuts ds ON d.id = ds.demande_id
+    LEFT JOIN profils p ON d.utilisateur_id = p.utilisateur_id
+    WHERE d.id = $1
+  `, [newId]);
+
+  res.json(newDemande.rows[0]);
 });
 
-// ---------- Discussions ----------
+app.get('/api/demandes/:id', authenticateToken, async (req, res) => {
+  const { id } = req.params;
+  try {
+    const result = await pool.query(`
+      SELECT d.id, d.titre, d.description, ds.statut, d.created_at,
+             d.utilisateur_id,
+             COALESCE(p.nom, '') as nom,
+             COALESCE(p.prenom, '') as prenom,
+             p.photo_url
+      FROM demandes d
+      LEFT JOIN demandes_statuts ds ON d.id = ds.demande_id
+      LEFT JOIN profils p ON d.utilisateur_id = p.utilisateur_id
+      WHERE d.id = $1
+    `, [id]);
+    if (result.rows.length === 0) {
+      return res.status(404).json({ message: 'Demande non trouvée' });
+    }
+    res.json(result.rows[0]);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+app.put('/api/demandes/:id', authenticateToken, async (req, res) => {
+  const { id } = req.params;
+  const { titre, description } = req.body;
+  const userId = req.user.id;
+  try {
+    const check = await pool.query('SELECT utilisateur_id FROM demandes WHERE id = $1', [id]);
+    if (check.rows.length === 0) return res.status(404).json({ message: 'Demande non trouvée' });
+    if (check.rows[0].utilisateur_id !== userId) {
+      return res.status(403).json({ message: 'Action non autorisée' });
+    }
+    await pool.query('UPDATE demandes SET titre = $1, description = $2 WHERE id = $3', [titre, description, id]);
+    const updated = await pool.query(`
+      SELECT d.id, d.titre, d.description, ds.statut, d.created_at,
+             COALESCE(p.nom, '') as nom, COALESCE(p.prenom, '') as prenom,
+             p.photo_url
+      FROM demandes d
+      LEFT JOIN demandes_statuts ds ON d.id = ds.demande_id
+      LEFT JOIN profils p ON d.utilisateur_id = p.utilisateur_id
+      WHERE d.id = $1
+    `, [id]);
+    res.json(updated.rows[0]);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+app.delete('/api/demandes/:id', authenticateToken, async (req, res) => {
+  const { id } = req.params;
+  const userId = req.user.id;
+  try {
+    const check = await pool.query('SELECT utilisateur_id FROM demandes WHERE id = $1', [id]);
+    if (check.rows.length === 0) return res.status(404).json({ message: 'Demande non trouvée' });
+    if (check.rows[0].utilisateur_id !== userId) {
+      return res.status(403).json({ message: 'Action non autorisée' });
+    }
+    await pool.query('DELETE FROM demandes_statuts WHERE demande_id = $1', [id]);
+    await pool.query('DELETE FROM offres WHERE demande_id = $1', [id]);
+    await pool.query('DELETE FROM conversations WHERE demande_id = $1', [id]);
+    await pool.query('DELETE FROM demandes WHERE id = $1', [id]);
+    res.json({ message: 'Demande supprimée avec succès' });
+  } catch (err) {
+    console.error("Erreur suppression:", err);
+    res.status(500).json({ message: 'Erreur serveur lors de la suppression' });
+  }
+});
+
+// ---------- Offres ----------
+app.post('/api/offres', authenticateToken, async (req, res) => {
+  const { demande_id, prestataire_id, message, prix_propose, delai_propose } = req.body;
+
+  const demandeCheck = await pool.query(`
+    SELECT d.id, ds.statut
+    FROM demandes d
+    JOIN demandes_statuts ds ON d.id = ds.demande_id
+    WHERE d.id = $1
+  `, [demande_id]);
+  if (demandeCheck.rows.length === 0) return res.status(404).json({ message: 'Demande non trouvée' });
+  if (demandeCheck.rows[0].statut !== 'ouverte') {
+    return res.status(400).json({ message: 'Cette demande n\'est plus ouverte' });
+  }
+
+  // Vérifier si une offre en attente existe déjà
+  const existingActiveOffer = await pool.query(`
+    SELECT o.id FROM offres o
+    JOIN offres_statuts os ON o.id = os.offre_id
+    WHERE o.demande_id = $1 AND o.prestataire_id = $2 AND os.statut = 'en_attente'
+  `, [demande_id, prestataire_id]);
+  if (existingActiveOffer.rows.length > 0) {
+    return res.status(400).json({ message: 'Vous avez déjà une offre en attente pour cette demande.' });
+  }
+
+  // Créer l'offre
+  const result = await pool.query(
+    `INSERT INTO offres (demande_id, prestataire_id, message) VALUES ($1, $2, $3) RETURNING id`,
+    [demande_id, prestataire_id, message]
+  );
+  const offreId = result.rows[0].id;
+  if (prix_propose) {
+    await pool.query(
+      'INSERT INTO offres_prix (offre_id, prix_propose, delai_propose) VALUES ($1, $2, $3)',
+      [offreId, prix_propose, delai_propose]
+    );
+  }
+  await pool.query(
+    'INSERT INTO offres_statuts (offre_id, statut) VALUES ($1, $2)',
+    [offreId, 'en_attente']
+  );
+
+  // Notification au propriétaire de la demande
+  const demandeOwner = await pool.query('SELECT utilisateur_id FROM demandes WHERE id = $1', [demande_id]);
+  const prestataireInfo = await pool.query('SELECT prenom, nom, photo_url FROM profils WHERE utilisateur_id = $1', [prestataire_id]);
+  const prestataireNom = `${prestataireInfo.rows[0].prenom} ${prestataireInfo.rows[0].nom}`;
+  await createNotification(
+    demandeOwner.rows[0].utilisateur_id,
+    'offre_recue',
+    'Nouvelle offre',
+    `${prestataireNom} a fait une offre sur votre demande.`,
+    { offre_id: offreId },
+    `/demande/${demande_id}`
+  );
+
+  res.json({ id: offreId, message: 'Offre créée avec succès' });
+});
+
+app.get('/api/demandes/:id/offres', authenticateToken, async (req, res) => {
+  const { id } = req.params;
+  try {
+    const result = await pool.query(`
+      SELECT o.id, o.demande_id, o.prestataire_id, o.message, o.created_at,
+             os.statut,
+             op.prix_propose, op.delai_propose,
+             p.nom, p.prenom, p.photo_url
+      FROM offres o
+      LEFT JOIN offres_statuts os ON o.id = os.offre_id
+      LEFT JOIN offres_prix op ON o.id = op.offre_id
+      LEFT JOIN profils p ON o.prestataire_id = p.utilisateur_id
+      WHERE o.demande_id = $1
+      ORDER BY o.created_at DESC
+    `, [id]);
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+app.put('/api/offres/:id', authenticateToken, async (req, res) => {
+  const { id } = req.params;
+  const { statut } = req.body;
+  const userId = req.user.id;
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    const check = await client.query(`
+      SELECT d.utilisateur_id, d.id as demande_id
+      FROM offres o
+      JOIN demandes d ON o.demande_id = d.id
+      WHERE o.id = $1
+    `, [id]);
+    if (check.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ message: 'Offre non trouvée' });
+    }
+    if (check.rows[0].utilisateur_id !== userId) {
+      await client.query('ROLLBACK');
+      return res.status(403).json({ message: 'Action non autorisée' });
+    }
+    const demandeId = check.rows[0].demande_id;
+
+    await client.query(
+      'UPDATE offres_statuts SET statut = $1 WHERE offre_id = $2',
+      [statut, id]
+    );
+
+    if (statut === 'acceptee') {
+      await client.query(
+        'INSERT INTO demandes_statuts (demande_id, statut) VALUES ($1, $2)',
+        [demandeId, 'en_cours']
+      );
+      await client.query(`
+        UPDATE offres_statuts
+        SET statut = 'refusee'
+        WHERE offre_id IN (
+          SELECT id FROM offres WHERE demande_id = $1
+        ) AND offre_id != $2
+      `, [demandeId, id]);
+
+      const prestataireIdResult = await client.query('SELECT prestataire_id FROM offres WHERE id = $1', [id]);
+      const prestataireId = prestataireIdResult.rows[0].prestataire_id;
+      await createNotification(
+        prestataireId,
+        'offre_acceptee',
+        'Offre acceptée',
+        `Votre offre a été acceptée pour la demande.`,
+        { offre_id: id },
+        `/demande/${demandeId}`
+      );
+    } else if (statut === 'refusee') {
+      const prestataireIdResult = await client.query('SELECT prestataire_id FROM offres WHERE id = $1', [id]);
+      const prestataireId = prestataireIdResult.rows[0].prestataire_id;
+      await createNotification(
+        prestataireId,
+        'offre_refusee',
+        'Offre refusée',
+        `Votre offre a été refusée pour la demande.`,
+        { offre_id: id },
+        `/demande/${demandeId}`
+      );
+    }
+
+    await client.query('COMMIT');
+    res.json({ message: `Offre ${statut === 'acceptee' ? 'acceptée' : 'refusée'} avec succès` });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error(err);
+    res.status(500).json({ message: err.message });
+  } finally {
+    client.release();
+  }
+});
+
+// ---------- Conversations ----------
+app.get('/api/conversations', authenticateToken, async (req, res) => {
+  const userId = req.user.id;
+  try {
+    const result = await pool.query(`
+      SELECT c.id, c.demande_id, c.service_id, c.created_at, c.updated_at,
+             u2.id as autre_id, COALESCE(p.nom, '') as autre_nom, COALESCE(p.prenom, '') as autre_prenom,
+             (SELECT contenu FROM messages WHERE conversation_id = c.id ORDER BY created_at DESC LIMIT 1) as dernier_message,
+             (SELECT created_at FROM messages WHERE conversation_id = c.id ORDER BY created_at DESC LIMIT 1) as derniere_activite
+      FROM conversations c
+      JOIN participants_conversation pc ON c.id = pc.conversation_id
+      JOIN utilisateurs u2 ON pc.utilisateur_id = u2.id
+      LEFT JOIN profils p ON u2.id = p.utilisateur_id
+      WHERE c.id IN (
+        SELECT conversation_id FROM participants_conversation WHERE utilisateur_id = $1
+      ) AND pc.utilisateur_id != $1
+      ORDER BY derniere_activite DESC NULLS LAST
+    `, [userId]);
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+app.post('/api/conversations', authenticateToken, async (req, res) => {
+  const { autre_id, demande_id, service_id } = req.body;
+  const userId = req.user.id;
+  try {
+    let query = `
+      SELECT c.id FROM conversations c
+      JOIN participants_conversation pc1 ON c.id = pc1.conversation_id
+      JOIN participants_conversation pc2 ON c.id = pc2.conversation_id
+      WHERE pc1.utilisateur_id = $1 AND pc2.utilisateur_id = $2
+    `;
+    const params = [userId, autre_id];
+    if (demande_id) {
+      query += ` AND c.demande_id = $3`;
+      params.push(demande_id);
+    } else if (service_id) {
+      query += ` AND c.service_id = $3`;
+      params.push(service_id);
+    }
+    const existing = await pool.query(query, params);
+    if (existing.rows.length > 0) {
+      return res.json({ id: existing.rows[0].id });
+    }
+    await pool.query('BEGIN');
+    const convResult = await pool.query(
+      `INSERT INTO conversations (demande_id, service_id) VALUES ($1, $2) RETURNING id`,
+      [demande_id || null, service_id || null]
+    );
+    const convId = convResult.rows[0].id;
+    await pool.query(
+      `INSERT INTO participants_conversation (conversation_id, utilisateur_id) VALUES ($1, $2), ($1, $3)`,
+      [convId, userId, autre_id]
+    );
+    await pool.query('COMMIT');
+    res.json({ id: convId });
+  } catch (err) {
+    await pool.query('ROLLBACK');
+    res.status(500).json({ message: err.message });
+  }
+});
+
 app.get('/api/conversations/:id/messages', authenticateToken, async (req, res) => {
   const { id } = req.params;
-  const result = await pool.query(
-    'SELECT * FROM messages WHERE conversation_id = $1 ORDER BY created_at ASC',
-    [id]
-  );
-  res.json(result.rows);
+  try {
+    const result = await pool.query(`
+      SELECT m.id, m.conversation_id, m.expediteur_id, m.contenu, m.type_message, m.media_url,
+             m.est_lu, m.created_at,
+             COALESCE(p.nom, '') as expediteur_nom, COALESCE(p.prenom, '') as expediteur_prenom
+      FROM messages m
+      LEFT JOIN profils p ON m.expediteur_id = p.utilisateur_id
+      WHERE m.conversation_id = $1 AND m.est_supprime_pour_expediteur = false
+      ORDER BY m.created_at ASC
+    `, [id]);
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
 });
 
 app.post('/api/conversations/:id/messages', authenticateToken, async (req, res) => {
   const { id } = req.params;
-  const { contenu } = req.body;
+  const { contenu, type_message } = req.body;
   const expediteurId = req.user.id;
-  const result = await pool.query(
-    'INSERT INTO messages (conversation_id, expediteur_id, contenu) VALUES ($1, $2, $3) RETURNING *',
-    [id, expediteurId, contenu]
-  );
-  res.json(result.rows[0]);
+  try {
+    const part = await pool.query(
+      'SELECT 1 FROM participants_conversation WHERE conversation_id = $1 AND utilisateur_id = $2',
+      [id, expediteurId]
+    );
+    if (part.rows.length === 0) return res.status(403).json({ message: 'Non autorisé' });
+    const result = await pool.query(
+      `INSERT INTO messages (conversation_id, expediteur_id, contenu, type_message)
+       VALUES ($1, $2, $3, $4) RETURNING *`,
+      [id, expediteurId, contenu, type_message || 'texte']
+    );
+    await pool.query('UPDATE conversations SET updated_at = NOW() WHERE id = $1', [id]);
+
+    const participants = await pool.query(
+      `SELECT utilisateur_id FROM participants_conversation WHERE conversation_id = $1 AND utilisateur_id != $2`,
+      [id, expediteurId]
+    );
+    for (const p of participants.rows) {
+      await createNotification(
+        p.utilisateur_id,
+        'nouveau_message',
+        'Nouveau message',
+        `Vous avez reçu un nouveau message.`,
+        { conversation_id: id },
+        `/discussion/${id}`
+      );
+    }
+
+    res.json(result.rows[0]);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
 });
 
-// Middleware d'authentification JWT
+app.put('/api/conversations/:id/lire', authenticateToken, async (req, res) => {
+  const { id } = req.params;
+  const userId = req.user.id;
+  try {
+    await pool.query(
+      `UPDATE messages SET est_lu = true
+       WHERE conversation_id = $1 AND expediteur_id != $2 AND est_lu = false`,
+      [id, userId]
+    );
+    res.json({ message: 'Messages marqués comme lus' });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// ---------- Notifications ----------
+app.get('/api/notifications', authenticateToken, async (req, res) => {
+  const userId = req.user.id;
+  const { limit = 50, offset = 0 } = req.query;
+  try {
+    const result = await pool.query(
+      `SELECT id, type, titre, message, donnees, est_lue, created_at, action_url
+       FROM notifications
+       WHERE utilisateur_id = $1
+       ORDER BY created_at DESC
+       LIMIT $2 OFFSET $3`,
+      [userId, limit, offset]
+    );
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+app.put('/api/notifications/:id/lire', authenticateToken, async (req, res) => {
+  const { id } = req.params;
+  const userId = req.user.id;
+  try {
+    await pool.query(
+      `UPDATE notifications SET est_lue = true, lue_le = NOW()
+       WHERE id = $1 AND utilisateur_id = $2`,
+      [id, userId]
+    );
+    res.json({ message: 'Notification marquée comme lue' });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+app.put('/api/notifications/lire-tout', authenticateToken, async (req, res) => {
+  const userId = req.user.id;
+  try {
+    await pool.query(
+      `UPDATE notifications SET est_lue = true, lue_le = NOW()
+       WHERE utilisateur_id = $1 AND est_lue = false`,
+      [userId]
+    );
+    res.json({ message: 'Toutes les notifications marquées comme lues' });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+async function createNotification(utilisateurId, type, titre, message, donnees = null, actionUrl = null) {
+  await pool.query(
+    `INSERT INTO notifications (utilisateur_id, type, titre, message, donnees, action_url)
+     VALUES ($1, $2, $3, $4, $5, $6)`,
+    [utilisateurId, type, titre, message, donnees, actionUrl]
+  );
+}
+
 function authenticateToken(req, res, next) {
   const authHeader = req.headers['authorization'];
   const token = authHeader && authHeader.split(' ')[1];

@@ -1,5 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
+import 'package:help_neighbor/app/dependances.dart';
+import 'package:help_neighbor/donnees/depots/depot_authentification.dart';
+import 'package:help_neighbor/presentation/fournisseurs/fournisseur_authentification.dart';
+import 'package:help_neighbor/presentation/fournisseurs/fournisseur_utilisateur.dart';
+import 'package:help_neighbor/presentation/widgets/communs/barre_navigation_bas_personnalisee.dart';
 
 class EcranProfil extends ConsumerWidget {
   final String userId;
@@ -7,9 +13,124 @@ class EcranProfil extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final authState = ref.watch(authProvider);
+    final isOwnProfile = authState.utilisateur?.id == userId;
+    final profilAsync = ref.watch(profilUtilisateurProvider);
+
     return Scaffold(
-      appBar: AppBar(title: const Text('Profil')),
-      body: Center(child: Text('Profil de l\'utilisateur : $userId')),
+      appBar: AppBar(
+        title: const Text('Profil'),
+        actions: [
+          if (isOwnProfile)
+            IconButton(
+              icon: const Icon(Icons.edit),
+              onPressed: () => context.push('/profil/modifier'),
+            ),
+          if (isOwnProfile)
+            IconButton(
+              icon: const Icon(Icons.logout),
+              onPressed: () => _deconnexion(context, ref),
+            ),
+        ],
+      ),
+      body: profilAsync.when(
+        data: (utilisateur) => SingleChildScrollView(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  CircleAvatar(
+                    radius: 40,
+                    backgroundImage: (utilisateur.photoUrl != null && utilisateur.photoUrl!.isNotEmpty)
+                        ? NetworkImage(utilisateur.photoUrl!)
+                        : null,
+                    child: (utilisateur.photoUrl == null || utilisateur.photoUrl!.isEmpty)
+                        ? Text(utilisateur.prenom?[0] ?? 'U')
+                        : null,
+                  ),
+                  const SizedBox(width: 16),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          '${utilisateur.prenom} ${utilisateur.nom}',
+                          style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+                        ),
+                        Text(utilisateur.email),
+                        if (utilisateur.telephone != null)
+                          Text('Tél: ${utilisateur.telephone}'),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 24),
+              const Text('À propos', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+              const SizedBox(height: 8),
+              Text(utilisateur.bio ?? 'Aucune bio'),
+              const SizedBox(height: 24),
+              const Text('Statistiques', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+              const SizedBox(height: 8),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceAround,
+                children: [
+                  _StatCard('Services', utilisateur.nbServices ?? 0),
+                  _StatCard('Demandes', utilisateur.nbDemandes ?? 0),
+                  _StatCard('Note', utilisateur.noteMoyenne.toStringAsFixed(1)),
+                ],
+              ),
+            ],
+          ),
+        ),
+        loading: () => const Center(child: CircularProgressIndicator()),
+        error: (err, _) => Center(child: Text('Erreur: $err')),
+      ),
+      bottomNavigationBar: BarreNavigationBasPersonnalisee(selectedIndex: 4), // Retiré const
+    );
+  }
+
+  Future<void> _deconnexion(BuildContext context, WidgetRef ref) async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Déconnexion'),
+        content: const Text('Voulez-vous vraiment vous déconnecter ?'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Non')),
+          TextButton(onPressed: () => Navigator.pop(context, true), child: const Text('Oui')),
+        ],
+      ),
+    );
+    if (confirm == true) {
+      final depot = getIt<DepotAuthentification>();
+      await depot.deconnexion();
+      ref.invalidate(authProvider);
+      ref.invalidate(profilUtilisateurProvider);
+      context.go('/connexion');
+    }
+  }
+}
+
+class _StatCard extends StatelessWidget {
+  final String label;
+  final dynamic value;
+  const _StatCard(this.label, this.value);
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          children: [
+            Text(value.toString(), style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold)),
+            Text(label),
+          ],
+        ),
+      ),
     );
   }
 }

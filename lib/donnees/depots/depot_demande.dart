@@ -1,14 +1,16 @@
 import 'package:dartz/dartz.dart';
 import 'package:help_neighbor/coeur/erreurs/gestionnaire_erreurs.dart';
-import 'package:help_neighbor/coeur/utils/resultat.dart';
 import 'package:help_neighbor/donnees/sources_donnees/distantes/client_api.dart';
 import 'package:help_neighbor/domaine/entites/entite_demande.dart';
+
+import '../../coeur/erreurs/echec.dart';
 
 class DepotDemande {
   final ClientApi _api;
   DepotDemande(this._api);
 
-  Future<Resultat<List<EntiteDemande>>> obtenirDemandesProches(double lat, double lon, int rayonKm) async {
+  // Récupérer les demandes à proximité
+  Future<Either<Echec, List<EntiteDemande>>> obtenirDemandesProches(double lat, double lon, int rayonKm) async {
     try {
       final response = await _api.get('/demandes/proches', query: {'lat': lat, 'lon': lon, 'rayon': rayonKm});
       final List list = response.data;
@@ -18,9 +20,40 @@ class DepotDemande {
     }
   }
 
-  Future<Resultat<EntiteDemande>> creerDemande(Map<String, dynamic> data) async {
+  // Créer une nouvelle demande
+  Future<Either<Echec, EntiteDemande>> creerDemande(Map<String, dynamic> data) async {
     try {
       final response = await _api.post('/demandes', data: data);
+      return Right(EntiteDemande.fromJson(response.data));
+    } catch (e) {
+      return Left(GestionnaireErreurs.traiterErreur(e));
+    }
+  }
+
+  // Mettre à jour une demande (modification)
+  Future<Either<Echec, EntiteDemande>> mettreAJourDemande(String id, Map<String, dynamic> data) async {
+    try {
+      final response = await _api.put('/demandes/$id', data: data);
+      return Right(EntiteDemande.fromJson(response.data));
+    } catch (e) {
+      return Left(GestionnaireErreurs.traiterErreur(e));
+    }
+  }
+
+  // Supprimer une demande
+  Future<Either<Echec, void>> supprimerDemande(String id) async {
+    try {
+      await _api.delete('/demandes/$id');
+      return const Right(null);
+    } catch (e) {
+      return Left(GestionnaireErreurs.traiterErreur(e));
+    }
+  }
+
+  // Récupérer une demande par son ID (NOUVEAU)
+  Future<Either<Echec, EntiteDemande>> obtenirDemandeParId(String id) async {
+    try {
+      final response = await _api.get('/demandes/$id');
       return Right(EntiteDemande.fromJson(response.data));
     } catch (e) {
       return Left(GestionnaireErreurs.traiterErreur(e));
